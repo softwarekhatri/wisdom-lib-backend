@@ -1,7 +1,6 @@
-const fs = require('fs');
-const path = require('path');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
+const { uploadToImgbb } = require('../utils/imgbb');
 
 function computeNextDueDate(admissionDate, totalMonthsPaid) {
   const base = admissionDate ? new Date(admissionDate) : new Date();
@@ -93,6 +92,8 @@ exports.createStudent = async (req, res) => {
       return res.status(400).json({ message: 'A student with this mobile number already exists' });
     }
 
+    const photoUrl = req.file ? await uploadToImgbb(req.file.buffer, req.file.originalname) : undefined;
+
     const student = await User.create({
       fullName: fullName.trim(),
       username,
@@ -104,7 +105,7 @@ exports.createStudent = async (req, res) => {
       address: address?.trim() || undefined,
       admissionDate: admissionDate ? new Date(admissionDate) : new Date(),
       libraryFees: parseFloat(libraryFees) || 0,
-      photo: req.file ? `/uploads/${req.file.filename}` : undefined,
+      photo: photoUrl,
       createdBy: req.user._id,
     });
 
@@ -128,7 +129,7 @@ exports.updateStudent = async (req, res) => {
     if (libraryFees !== undefined) update.libraryFees = parseFloat(libraryFees);
     if (isActive !== undefined) update.isActive = isActive === true || isActive === 'true';
     if (whatsappNumber !== undefined) update.whatsappNumber = whatsappNumber.trim() || undefined;
-    if (req.file) update.photo = `/uploads/${req.file.filename}`;
+    if (req.file) update.photo = await uploadToImgbb(req.file.buffer, req.file.originalname);
 
     if (mobile !== undefined) {
       update.mobile = mobile.trim();
@@ -155,10 +156,6 @@ exports.deleteStudent = async (req, res) => {
       return res.status(404).json({ message: 'Student not found' });
     }
     await Payment.deleteMany({ student: student._id });
-    if (student.photo) {
-      const filePath = path.join(__dirname, '../../', student.photo);
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    }
     await User.findByIdAndDelete(req.params.id);
     res.json({ message: 'Student and all associated records deleted' });
   } catch (err) {

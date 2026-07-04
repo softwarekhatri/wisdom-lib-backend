@@ -1,6 +1,5 @@
 const router = require('express').Router();
 const multer = require('multer');
-const path = require('path');
 const { auth, requireRole } = require('../middleware/auth');
 const {
   listStudents,
@@ -11,14 +10,7 @@ const {
   deleteStudent,
 } = require('../controllers/studentController');
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, path.join(__dirname, '../../uploads')),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `photo_${Date.now()}${ext}`);
-  },
-});
-const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 router.get('/', auth, requireRole('MANAGER', 'ADMIN', 'SUPER_ADMIN'), listStudents);
 router.post('/', auth, requireRole('MANAGER', 'ADMIN', 'SUPER_ADMIN'), upload.single('photo'), createStudent);
