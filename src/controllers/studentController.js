@@ -1,6 +1,8 @@
+const ExcelJS = require('exceljs');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
 const { uploadToImgbb } = require('../utils/imgbb');
+const { BATCHES } = require('../utils/batches');
 
 function computeNextDueDate(admissionDate, totalMonthsPaid) {
   const base = admissionDate ? new Date(admissionDate) : new Date();
@@ -9,6 +11,13 @@ function computeNextDueDate(admissionDate, totalMonthsPaid) {
   const nextDue = new Date(paidThrough);
   nextDue.setDate(nextDue.getDate() + 1);
   return nextDue;
+}
+
+async function findSeatConflict(seatNumber, batch, excludeId) {
+  if (!seatNumber || !batch) return null;
+  const query = { role: 'STUDENT', isActive: true, seatNumber, batch };
+  if (excludeId) query._id = { $ne: excludeId };
+  return User.findOne(query).select('fullName');
 }
 
 exports.listStudents = async (req, res) => {
@@ -79,7 +88,7 @@ exports.getStudent = async (req, res) => {
 
 exports.createStudent = async (req, res) => {
   try {
-    const { fullName, mobile, whatsappNumber, email, address, admissionDate, libraryFees, password } = req.body;
+    const { fullName, mobile, whatsappNumber, email, address, admissionDate, libraryFees, password, seatNumber, batch } = req.body;
 
     if (!fullName) return res.status(400).json({ message: 'Full name is required' });
 
@@ -90,6 +99,13 @@ exports.createStudent = async (req, res) => {
     const existing = await User.findOne({ username });
     if (existing) {
       return res.status(400).json({ message: 'A student with this mobile number already exists' });
+    }
+
+    const trimmedSeat = seatNumber?.trim() || undefined;
+    const trimmedBatch = batch?.trim() || undefined;
+    const conflict = await findSeatConflict(trimmedSeat, trimmedBatch);
+    if (conflict) {
+      return res.status(400).json({ message: `Seat ${trimmedSeat} is already occupied for batch ${trimmedBatch} (${conflict.fullName})` });
     }
 
     const photoUrl = req.file ? await uploadToImgbb(req.file.buffer, req.file.originalname) : undefined;
@@ -105,6 +121,8 @@ exports.createStudent = async (req, res) => {
       address: address?.trim() || undefined,
       admissionDate: admissionDate ? new Date(admissionDate) : new Date(),
       libraryFees: parseFloat(libraryFees) || 0,
+      seatNumber: trimmedSeat,
+      batch: trimmedBatch,
       photo: photoUrl,
       createdBy: req.user._id,
     });
@@ -119,7 +137,12 @@ exports.createStudent = async (req, res) => {
 
 exports.updateStudent = async (req, res) => {
   try {
-    const { fullName, mobile, whatsappNumber, email, address, admissionDate, libraryFees, isActive } = req.body;
+    const { fullName, mobile, whatsappNumber, email, address, admissionDate, libraryFees, isActive, seatNumber, batch } = req.body;
+
+    const existing = await User.findById(req.params.id);
+    if (!existing || existing.role !== 'STUDENT') {
+      return res.status(404).json({ message: 'Student not found' });
+    }
 
     const update = {};
     if (fullName !== undefined) update.fullName = fullName.trim();
@@ -136,12 +159,20 @@ exports.updateStudent = async (req, res) => {
       update.username = mobile.trim().toLowerCase();
     }
 
+    if (seatNumber !== undefined) update.seatNumber = seatNumber.trim() || undefined;
+    if (batch !== undefined) update.batch = batch.trim() || undefined;
+
+    const finalSeat = seatNumber !== undefined ? update.seatNumber : existing.seatNumber;
+    const finalBatch = batch !== undefined ? update.batch : existing.batch;
+    const conflict = await findSeatConflict(finalSeat, finalBatch, req.params.id);
+    if (conflict) {
+      return res.status(400).json({ message: `Seat ${finalSeat} is already occupied for batch ${finalBatch} (${conflict.fullName})` });
+    }
+
     const student = await User.findByIdAndUpdate(req.params.id, update, {
       new: true,
       select: '-password',
     });
-
-    if (!student) return res.status(404).json({ message: 'Student not found' });
 
     res.json({ student });
   } catch (err) {
@@ -170,6 +201,67 @@ exports.resetPassword = async (req, res) => {
 
     await User.findByIdAndUpdate(req.params.id, { password });
     res.json({ message: 'Password updated successfully' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.getBatches = (req, res) => {
+  res.json({ batches: BATCHES });
+};
+
+exports.exportStudentsExcel = async (req, res) => {
+  try {
+    const students = await User.find({ role: 'STUDENT' }).sort({ createdAt: -1 }).lean();
+    const ids = students.map(s => s._id);
+    const paymentCounts = await Payment.aggregate([
+      { $match: { student: { $in: ids } } },
+      { $unwind: '$monthsCovered' },
+      { $group: { _id: '$student', totalMonths: { $sum: 1 } } },
+    ]);
+    const countMap = Object.fromEntries(paymentCounts.map(p => [p._id.toString(), p.totalMonths]));
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Students');
+
+    sheet.columns = [
+      { header: 'Full Name', key: 'fullName', width: 24 },
+      { header: 'Username', key: 'username', width: 20 },
+      { header: 'Mobile', key: 'mobile', width: 16 },
+      { header: 'WhatsApp', key: 'whatsappNumber', width: 16 },
+      { header: 'Email', key: 'email', width: 24 },
+      { header: 'Address', key: 'address', width: 30 },
+      { header: 'Admission Date', key: 'admissionDate', width: 16 },
+      { header: 'Monthly Fees', key: 'libraryFees', width: 14 },
+      { header: 'Seat Number', key: 'seatNumber', width: 14 },
+      { header: 'Batch', key: 'batch', width: 16 },
+      { header: 'Next Due Date', key: 'nextDueDate', width: 16 },
+      { header: 'Active', key: 'isActive', width: 10 },
+    ];
+    sheet.getRow(1).font = { bold: true };
+
+    students.forEach(s => {
+      const nextDueDate = computeNextDueDate(s.admissionDate, countMap[s._id.toString()] || 0);
+      sheet.addRow({
+        fullName: s.fullName,
+        username: s.username,
+        mobile: s.mobile || '',
+        whatsappNumber: s.whatsappNumber || '',
+        email: s.email || '',
+        address: s.address || '',
+        admissionDate: s.admissionDate ? new Date(s.admissionDate).toLocaleDateString('en-IN') : '',
+        libraryFees: s.libraryFees || 0,
+        seatNumber: s.seatNumber || '',
+        batch: s.batch || '',
+        nextDueDate: nextDueDate ? nextDueDate.toLocaleDateString('en-IN') : '',
+        isActive: s.isActive ? 'Active' : 'Inactive',
+      });
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="students.xlsx"');
+    await workbook.xlsx.write(res);
+    res.end();
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
