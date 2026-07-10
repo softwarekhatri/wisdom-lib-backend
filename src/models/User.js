@@ -15,8 +15,13 @@ const userSchema = new mongoose.Schema(
     address: { type: String, trim: true },
     admissionDate: { type: Date, default: Date.now },
     libraryFees: { type: Number, default: 0 },
-    seatNumber: { type: String, trim: true },
-    batch: { type: String, trim: true },
+    seatAssignments: [
+      {
+        _id: false,
+        batch: { type: String, trim: true, required: true },
+        seatNumber: { type: String, trim: true, required: true },
+      },
+    ],
     isActive: { type: Boolean, default: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

@@ -13,11 +13,53 @@ function computeNextDueDate(admissionDate, totalMonthsPaid) {
   return nextDue;
 }
 
-async function findSeatConflict(seatNumber, batch, excludeId) {
-  if (!seatNumber || !batch) return null;
-  const query = { role: 'STUDENT', isActive: true, seatNumber, batch };
-  if (excludeId) query._id = { $ne: excludeId };
-  return User.findOne(query).select('fullName');
+// Accepts the raw seatAssignments field from the request body — either a JSON
+// string (multipart/form-data) or an already-parsed array (JSON body) — and
+// returns a normalized, validated array or throws with a user-facing message.
+function parseSeatAssignments(raw) {
+  if (raw === undefined) return undefined;
+  let list = raw;
+  if (typeof raw === 'string') {
+    if (!raw.trim()) return [];
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      throw new Error('Invalid seat assignments format');
+    }
+  }
+  if (!Array.isArray(list)) throw new Error('Invalid seat assignments format');
+
+  const cleaned = list
+    .map(a => ({ batch: (a?.batch || '').trim(), seatNumber: (a?.seatNumber || '').trim() }))
+    .filter(a => a.batch && a.seatNumber);
+
+  const seenBatches = new Set();
+  for (const a of cleaned) {
+    if (seenBatches.has(a.batch)) {
+      throw new Error(`Only one seat can be assigned per batch — duplicate entry for "${a.batch}"`);
+    }
+    seenBatches.add(a.batch);
+  }
+
+  return cleaned;
+}
+
+// Checks every (batch, seatNumber) pair against other active students and
+// returns the first conflict found, or null.
+async function findSeatConflicts(assignments, excludeId) {
+  for (const { batch, seatNumber } of assignments) {
+    const query = {
+      role: 'STUDENT',
+      isActive: true,
+      seatAssignments: { $elemMatch: { batch, seatNumber } },
+    };
+    if (excludeId) query._id = { $ne: excludeId };
+    const conflict = await User.findOne(query).select('fullName');
+    if (conflict) {
+      return `Seat ${seatNumber} is already occupied for batch ${batch} (${conflict.fullName})`;
+    }
+  }
+  return null;
 }
 
 exports.listStudents = async (req, res) => {
@@ -88,7 +130,7 @@ exports.getStudent = async (req, res) => {
 
 exports.createStudent = async (req, res) => {
   try {
-    const { fullName, mobile, whatsappNumber, email, address, admissionDate, libraryFees, password, seatNumber, batch } = req.body;
+    const { fullName, mobile, whatsappNumber, email, address, admissionDate, libraryFees, password, seatAssignments } = req.body;
 
     if (!fullName) return res.status(400).json({ message: 'Full name is required' });
 
@@ -101,12 +143,15 @@ exports.createStudent = async (req, res) => {
       return res.status(400).json({ message: 'A student with this mobile number already exists' });
     }
 
-    const trimmedSeat = seatNumber?.trim() || undefined;
-    const trimmedBatch = batch?.trim() || undefined;
-    const conflict = await findSeatConflict(trimmedSeat, trimmedBatch);
-    if (conflict) {
-      return res.status(400).json({ message: `Seat ${trimmedSeat} is already occupied for batch ${trimmedBatch} (${conflict.fullName})` });
+    let assignments;
+    try {
+      assignments = parseSeatAssignments(seatAssignments) || [];
+    } catch (err) {
+      return res.status(400).json({ message: err.message });
     }
+
+    const conflictMessage = await findSeatConflicts(assignments);
+    if (conflictMessage) return res.status(400).json({ message: conflictMessage });
 
     const photoUrl = req.file ? await uploadToImgbb(req.file.buffer, req.file.originalname) : undefined;
 
@@ -121,8 +166,7 @@ exports.createStudent = async (req, res) => {
       address: address?.trim() || undefined,
       admissionDate: admissionDate ? new Date(admissionDate) : new Date(),
       libraryFees: parseFloat(libraryFees) || 0,
-      seatNumber: trimmedSeat,
-      batch: trimmedBatch,
+      seatAssignments: assignments,
       photo: photoUrl,
       createdBy: req.user._id,
     });
@@ -137,7 +181,7 @@ exports.createStudent = async (req, res) => {
 
 exports.updateStudent = async (req, res) => {
   try {
-    const { fullName, mobile, whatsappNumber, email, address, admissionDate, libraryFees, isActive, seatNumber, batch } = req.body;
+    const { fullName, mobile, whatsappNumber, email, address, admissionDate, libraryFees, isActive, seatAssignments } = req.body;
 
     const existing = await User.findById(req.params.id);
     if (!existing || existing.role !== 'STUDENT') {
@@ -159,14 +203,16 @@ exports.updateStudent = async (req, res) => {
       update.username = mobile.trim().toLowerCase();
     }
 
-    if (seatNumber !== undefined) update.seatNumber = seatNumber.trim() || undefined;
-    if (batch !== undefined) update.batch = batch.trim() || undefined;
-
-    const finalSeat = seatNumber !== undefined ? update.seatNumber : existing.seatNumber;
-    const finalBatch = batch !== undefined ? update.batch : existing.batch;
-    const conflict = await findSeatConflict(finalSeat, finalBatch, req.params.id);
-    if (conflict) {
-      return res.status(400).json({ message: `Seat ${finalSeat} is already occupied for batch ${finalBatch} (${conflict.fullName})` });
+    if (seatAssignments !== undefined) {
+      let assignments;
+      try {
+        assignments = parseSeatAssignments(seatAssignments) || [];
+      } catch (err) {
+        return res.status(400).json({ message: err.message });
+      }
+      const conflictMessage = await findSeatConflicts(assignments, req.params.id);
+      if (conflictMessage) return res.status(400).json({ message: conflictMessage });
+      update.seatAssignments = assignments;
     }
 
     const student = await User.findByIdAndUpdate(req.params.id, update, {
@@ -210,6 +256,45 @@ exports.getBatches = (req, res) => {
   res.json({ batches: BATCHES });
 };
 
+// Flattened, searchable view of every occupied seat across all batches —
+// used by the admin "seat map" screen.
+exports.getSeatMap = async (req, res) => {
+  try {
+    const batch = (req.query.batch || '').trim();
+    const seatNumber = (req.query.seatNumber || '').trim();
+
+    const pipeline = [
+      { $match: { role: 'STUDENT', isActive: true, 'seatAssignments.0': { $exists: true } } },
+      { $unwind: '$seatAssignments' },
+    ];
+
+    const unwoundMatch = {};
+    if (batch) unwoundMatch['seatAssignments.batch'] = { $regex: batch, $options: 'i' };
+    if (seatNumber) unwoundMatch['seatAssignments.seatNumber'] = { $regex: seatNumber, $options: 'i' };
+    if (Object.keys(unwoundMatch).length) pipeline.push({ $match: unwoundMatch });
+
+    pipeline.push(
+      {
+        $project: {
+          _id: 0,
+          studentId: '$_id',
+          fullName: 1,
+          mobile: 1,
+          username: 1,
+          batch: '$seatAssignments.batch',
+          seatNumber: '$seatAssignments.seatNumber',
+        },
+      },
+      { $sort: { batch: 1, seatNumber: 1 } }
+    );
+
+    const seats = await User.aggregate(pipeline);
+    res.json({ seats });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 exports.exportStudentsExcel = async (req, res) => {
   try {
     const students = await User.find({ role: 'STUDENT' }).sort({ createdAt: -1 }).lean();
@@ -233,8 +318,7 @@ exports.exportStudentsExcel = async (req, res) => {
       { header: 'Address', key: 'address', width: 30 },
       { header: 'Admission Date', key: 'admissionDate', width: 16 },
       { header: 'Monthly Fees', key: 'libraryFees', width: 14 },
-      { header: 'Seat Number', key: 'seatNumber', width: 14 },
-      { header: 'Batch', key: 'batch', width: 16 },
+      { header: 'Seats (Batch: Seat)', key: 'seats', width: 40 },
       { header: 'Next Due Date', key: 'nextDueDate', width: 16 },
       { header: 'Active', key: 'isActive', width: 10 },
     ];
@@ -242,6 +326,7 @@ exports.exportStudentsExcel = async (req, res) => {
 
     students.forEach(s => {
       const nextDueDate = computeNextDueDate(s.admissionDate, countMap[s._id.toString()] || 0);
+      const seats = (s.seatAssignments || []).map(a => `${a.batch}: Seat ${a.seatNumber}`).join('; ');
       sheet.addRow({
         fullName: s.fullName,
         username: s.username,
@@ -251,8 +336,7 @@ exports.exportStudentsExcel = async (req, res) => {
         address: s.address || '',
         admissionDate: s.admissionDate ? new Date(s.admissionDate).toLocaleDateString('en-IN') : '',
         libraryFees: s.libraryFees || 0,
-        seatNumber: s.seatNumber || '',
-        batch: s.batch || '',
+        seats: seats || 'Not decided',
         nextDueDate: nextDueDate ? nextDueDate.toLocaleDateString('en-IN') : '',
         isActive: s.isActive ? 'Active' : 'Inactive',
       });
