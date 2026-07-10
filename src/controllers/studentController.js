@@ -34,7 +34,8 @@ function parseSeatAssignments(raw) {
       batch: (a?.batch || "").trim(),
       seatNumber: (a?.seatNumber || "").trim(),
     }))
-    .filter((a) => a.batch && a.seatNumber);
+    // Batch is mandatory; seat number is optional (student may not have a seat yet).
+    .filter((a) => a.batch);
 
   const seenBatches = new Set();
   for (const a of cleaned) {
@@ -50,9 +51,11 @@ function parseSeatAssignments(raw) {
 }
 
 // Checks every (batch, seatNumber) pair against other active students and
-// returns the first conflict found, or null.
+// returns the first conflict found, or null. Assignments without a seat
+// number can't conflict, since no seat is actually occupied.
 async function findSeatConflicts(assignments, excludeId) {
   for (const { batch, seatNumber } of assignments) {
+    if (!seatNumber) continue;
     const query = {
       role: "STUDENT",
       isActive: true,
@@ -191,6 +194,10 @@ exports.createStudent = async (req, res) => {
       return res.status(400).json({ message: err.message });
     }
 
+    if (assignments.length === 0) {
+      return res.status(400).json({ message: "At least one batch is required" });
+    }
+
     const conflictMessage = await findSeatConflicts(assignments);
     if (conflictMessage)
       return res.status(400).json({ message: conflictMessage });
@@ -271,6 +278,9 @@ exports.updateStudent = async (req, res) => {
       } catch (err) {
         return res.status(400).json({ message: err.message });
       }
+      if (assignments.length === 0) {
+        return res.status(400).json({ message: "At least one batch is required" });
+      }
       const conflictMessage = await findSeatConflicts(
         assignments,
         req.params.id,
@@ -322,8 +332,10 @@ exports.getBatches = (req, res) => {
   res.json({ batches: BATCHES });
 };
 
-// Flattened, searchable view of every occupied seat across all batches —
-// used by the admin "seat map" screen.
+// Flattened, searchable view of every batch assignment (seat number
+// optional) — used by the admin "seat map" screen. Searching by batch shows
+// every student in that batch, seated or not; searching by seat number only
+// returns students who actually hold that seat.
 exports.getSeatMap = async (req, res) => {
   try {
     const batch = (req.query.batch || "").trim();
@@ -412,7 +424,7 @@ exports.exportStudentsExcel = async (req, res) => {
         countMap[s._id.toString()] || 0,
       );
       const seats = (s.seatAssignments || [])
-        .map((a) => `${a.batch}: Seat ${a.seatNumber}`)
+        .map((a) => (a.seatNumber ? `${a.batch}: Seat ${a.seatNumber}` : a.batch))
         .join("; ");
       sheet.addRow({
         fullName: s.fullName,
