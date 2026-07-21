@@ -4,6 +4,13 @@ const Payment = require("../models/Payment");
 const { uploadPhoto } = require("../utils/uploadPhoto");
 const { BATCHES } = require("../utils/batches");
 
+function buildPhotoName(fullName, seatAssignments, mobile) {
+  const shifts = (seatAssignments || [])
+    .map(a => a.batch.replace(/\s+/g, '').replace(/-/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, ''))
+    .join('_');
+  return [fullName, shifts, mobile].filter(Boolean).join('_');
+}
+
 function computeNextDueDate(admissionDate, totalMonthsPaid) {
   const base = admissionDate ? new Date(admissionDate) : new Date();
   const paidThrough = new Date(base);
@@ -202,9 +209,8 @@ exports.createStudent = async (req, res) => {
     if (conflictMessage)
       return res.status(400).json({ message: conflictMessage });
 
-    const photoName = [fullName?.trim(), mobile?.trim()].filter(Boolean).join('_');
     const photoUrl = req.file
-      ? await uploadPhoto(req.file.buffer, req.file.originalname, photoName)
+      ? await uploadPhoto(req.file.buffer, req.file.originalname, buildPhotoName(fullName?.trim(), assignments, mobile?.trim()))
       : undefined;
 
     const student = await User.create({
@@ -262,10 +268,10 @@ exports.updateStudent = async (req, res) => {
     if (whatsappNumber !== undefined)
       update.whatsappNumber = whatsappNumber.trim() || undefined;
     if (req.file) {
-      const name = (fullName || existing.fullName)?.trim();
-      const mob  = (mobile  || existing.mobile)?.trim();
-      const photoName = [name, mob].filter(Boolean).join('_');
-      update.photo = await uploadPhoto(req.file.buffer, req.file.originalname, photoName);
+      const name    = (fullName || existing.fullName)?.trim();
+      const mob     = (mobile   || existing.mobile)?.trim();
+      const seats   = update.seatAssignments || existing.seatAssignments;
+      update.photo  = await uploadPhoto(req.file.buffer, req.file.originalname, buildPhotoName(name, seats, mob));
     }
 
     if (mobile !== undefined) {
