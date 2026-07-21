@@ -1,7 +1,7 @@
 const ExcelJS = require("exceljs");
 const User = require("../models/User");
 const Payment = require("../models/Payment");
-const { uploadToImgbb } = require("../utils/imgbb");
+const { uploadPhoto } = require("../utils/uploadPhoto");
 const { BATCHES } = require("../utils/batches");
 
 function computeNextDueDate(admissionDate, totalMonthsPaid) {
@@ -203,7 +203,7 @@ exports.createStudent = async (req, res) => {
       return res.status(400).json({ message: conflictMessage });
 
     const photoUrl = req.file
-      ? await uploadToImgbb(req.file.buffer, req.file.originalname)
+      ? await uploadPhoto(req.file.buffer, req.file.originalname)
       : undefined;
 
     const student = await User.create({
@@ -261,10 +261,7 @@ exports.updateStudent = async (req, res) => {
     if (whatsappNumber !== undefined)
       update.whatsappNumber = whatsappNumber.trim() || undefined;
     if (req.file)
-      update.photo = await uploadToImgbb(
-        req.file.buffer,
-        req.file.originalname,
-      );
+      update.photo = await uploadPhoto(req.file.buffer, req.file.originalname);
 
     if (mobile !== undefined) {
       update.mobile = mobile.trim();
