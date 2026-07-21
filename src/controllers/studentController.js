@@ -203,7 +203,7 @@ exports.createStudent = async (req, res) => {
       return res.status(400).json({ message: conflictMessage });
 
     const photoUrl = req.file
-      ? await uploadPhoto(req.file.buffer, req.file.originalname)
+      ? await uploadPhoto(req.file.buffer, req.file.originalname, fullName?.trim())
       : undefined;
 
     const student = await User.create({
@@ -261,7 +261,7 @@ exports.updateStudent = async (req, res) => {
     if (whatsappNumber !== undefined)
       update.whatsappNumber = whatsappNumber.trim() || undefined;
     if (req.file)
-      update.photo = await uploadPhoto(req.file.buffer, req.file.originalname);
+      update.photo = await uploadPhoto(req.file.buffer, req.file.originalname, (fullName || existing.fullName)?.trim());
 
     if (mobile !== undefined) {
       update.mobile = mobile.trim();
