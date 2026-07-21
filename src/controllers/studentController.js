@@ -202,8 +202,9 @@ exports.createStudent = async (req, res) => {
     if (conflictMessage)
       return res.status(400).json({ message: conflictMessage });
 
+    const photoName = [fullName?.trim(), mobile?.trim()].filter(Boolean).join('_');
     const photoUrl = req.file
-      ? await uploadPhoto(req.file.buffer, req.file.originalname, fullName?.trim())
+      ? await uploadPhoto(req.file.buffer, req.file.originalname, photoName)
       : undefined;
 
     const student = await User.create({
@@ -260,8 +261,12 @@ exports.updateStudent = async (req, res) => {
       update.isActive = isActive === true || isActive === "true";
     if (whatsappNumber !== undefined)
       update.whatsappNumber = whatsappNumber.trim() || undefined;
-    if (req.file)
-      update.photo = await uploadPhoto(req.file.buffer, req.file.originalname, (fullName || existing.fullName)?.trim());
+    if (req.file) {
+      const name = (fullName || existing.fullName)?.trim();
+      const mob  = (mobile  || existing.mobile)?.trim();
+      const photoName = [name, mob].filter(Boolean).join('_');
+      update.photo = await uploadPhoto(req.file.buffer, req.file.originalname, photoName);
+    }
 
     if (mobile !== undefined) {
       update.mobile = mobile.trim();
