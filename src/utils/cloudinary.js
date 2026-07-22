@@ -11,7 +11,17 @@ const uploadToCloudinary = async (buffer, filename, { folder, publicId } = {}) =
     ext === 'gif'  ? 'image/gif'  :
     ext === 'webp' ? 'image/webp' : 'image/jpeg';
 
-  const opts = { resource_type: 'image', overwrite: true };
+  const opts = {
+    resource_type: 'image',
+    overwrite: true,
+    transformation: {
+      width: 600,
+      height: 600,
+      crop: 'limit',       // shrink if larger, never upscale
+      quality: 'auto',     // Cloudinary picks best quality/size ratio
+      fetch_format: 'auto', // serves WebP/AVIF to browsers that support it
+    },
+  };
   if (folder)   opts.folder    = folder;
   if (publicId) opts.public_id = sanitizePublicId(publicId);
 
