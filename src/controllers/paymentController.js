@@ -86,7 +86,7 @@ exports.getAllPayments = async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = 25;
     const skip = (page - 1) * limit;
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, mode } = req.query;
 
     const query = {};
     if (startDate || endDate) {
@@ -97,6 +97,9 @@ exports.getAllPayments = async (req, res) => {
         end.setHours(23, 59, 59, 999);
         query.receivedDate.$lte = end;
       }
+    }
+    if (mode && ['cash', 'online'].includes(mode)) {
+      query.mode = mode;
     }
 
     const [payments, total] = await Promise.all([
