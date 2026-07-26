@@ -104,7 +104,7 @@ exports.getAllPayments = async (req, res) => {
 
     const [payments, total] = await Promise.all([
       Payment.find(query)
-        .sort({ receivedDate: -1 })
+        .sort({ receivedDate: -1, _id: -1 })
         .skip(skip)
         .limit(limit)
         .populate('student', 'fullName mobile photo')
