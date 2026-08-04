@@ -107,35 +107,51 @@ exports.studentsWithDues = async (req, res) => {
 exports.paymentComparison = async (req, res) => {
   try {
     const now = new Date();
-    const currentDay = now.getDate();
-    const half = currentDay <= 15 ? 1 : 2;
+
+    const formatLabel = (start, end) => {
+      const s = new Date(start), e = new Date(end);
+      const sameMonth = s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear();
+      const mon = s.toLocaleString('default', { month: 'short' });
+      if (sameMonth) return `${s.getDate()}-${e.getDate()} ${mon} ${s.getFullYear()}`;
+      return `${s.getDate()} ${mon} – ${e.getDate()} ${e.toLocaleString('default', { month: 'short' })} ${e.getFullYear()}`;
+    };
 
     let current, previous;
 
-    if (half === 1) {
-      current = {
-        start: new Date(now.getFullYear(), now.getMonth(), 1),
-        end: new Date(now.getFullYear(), now.getMonth(), 15, 23, 59, 59),
-        label: `1-15 ${now.toLocaleString('default', { month: 'short' })}`,
-      };
-      previous = {
-        start: new Date(now.getFullYear(), now.getMonth() - 1, 1),
-        end: new Date(now.getFullYear(), now.getMonth() - 1, 15, 23, 59, 59),
-        label: `1-15 ${new Date(now.getFullYear(), now.getMonth() - 1).toLocaleString('default', { month: 'short' })}`,
-      };
+    if (req.query.p1Start && req.query.p1End && req.query.p2Start && req.query.p2End) {
+      const p2End = new Date(req.query.p2End); p2End.setHours(23, 59, 59, 999);
+      const p1End = new Date(req.query.p1End); p1End.setHours(23, 59, 59, 999);
+      previous = { start: new Date(req.query.p1Start), end: p1End, label: formatLabel(req.query.p1Start, req.query.p1End) };
+      current  = { start: new Date(req.query.p2Start), end: p2End, label: formatLabel(req.query.p2Start, req.query.p2End) };
     } else {
-      const lastCurrent = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-      const lastPrev = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
-      current = {
-        start: new Date(now.getFullYear(), now.getMonth(), 16),
-        end: new Date(now.getFullYear(), now.getMonth(), lastCurrent, 23, 59, 59),
-        label: `16-${lastCurrent} ${now.toLocaleString('default', { month: 'short' })}`,
-      };
-      previous = {
-        start: new Date(now.getFullYear(), now.getMonth() - 1, 16),
-        end: new Date(now.getFullYear(), now.getMonth() - 1, lastPrev, 23, 59, 59),
-        label: `16-${lastPrev} ${new Date(now.getFullYear(), now.getMonth() - 1).toLocaleString('default', { month: 'short' })}`,
-      };
+      const currentDay = now.getDate();
+      const half = currentDay <= 15 ? 1 : 2;
+
+      if (half === 1) {
+        current = {
+          start: new Date(now.getFullYear(), now.getMonth(), 1),
+          end: new Date(now.getFullYear(), now.getMonth(), 15, 23, 59, 59),
+          label: `1-15 ${now.toLocaleString('default', { month: 'short' })}`,
+        };
+        previous = {
+          start: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+          end: new Date(now.getFullYear(), now.getMonth() - 1, 15, 23, 59, 59),
+          label: `1-15 ${new Date(now.getFullYear(), now.getMonth() - 1).toLocaleString('default', { month: 'short' })}`,
+        };
+      } else {
+        const lastCurrent = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const lastPrev = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
+        current = {
+          start: new Date(now.getFullYear(), now.getMonth(), 16),
+          end: new Date(now.getFullYear(), now.getMonth(), lastCurrent, 23, 59, 59),
+          label: `16-${lastCurrent} ${now.toLocaleString('default', { month: 'short' })}`,
+        };
+        previous = {
+          start: new Date(now.getFullYear(), now.getMonth() - 1, 16),
+          end: new Date(now.getFullYear(), now.getMonth() - 1, lastPrev, 23, 59, 59),
+          label: `16-${lastPrev} ${new Date(now.getFullYear(), now.getMonth() - 1).toLocaleString('default', { month: 'short' })}`,
+        };
+      }
     }
 
     const [currentPayments, previousPayments] = await Promise.all([

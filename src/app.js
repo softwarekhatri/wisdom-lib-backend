@@ -14,6 +14,8 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/students', require('./routes/students'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/reports', require('./routes/reports'));
+app.use('/api/expenses', require('./routes/expenses'));
+// app.use('/api/whatsapp', require('./routes/whatsapp')); // WhatsApp API — add credentials and re-enable later
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', service: 'wisdom-library-api' }));
 
