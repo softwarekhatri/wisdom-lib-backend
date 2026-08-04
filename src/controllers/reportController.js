@@ -47,44 +47,49 @@ exports.studentsWithDues = async (req, res) => {
     const now = new Date();
 
     const students = await User.find({ role: 'STUDENT', isActive: true }).select('-password').lean();
+    const ids = students.map(s => s._id);
 
-    const enriched = await Promise.all(
-      students.map(async (student) => {
-        const allPayments = await Payment.find({ student: student._id }).lean();
+    // Two aggregates instead of N per-student queries
+    const [monthsAgg, lastPayAgg] = await Promise.all([
+      Payment.aggregate([
+        { $match: { student: { $in: ids } } },
+        { $unwind: '$monthsCovered' },
+        { $group: { _id: '$student', totalMonths: { $sum: 1 } } },
+      ]),
+      Payment.aggregate([
+        { $match: { student: { $in: ids } } },
+        { $sort: { receivedDate: -1 } },
+        { $group: { _id: '$student', lastDate: { $first: '$receivedDate' }, lastAmount: { $first: '$amount' } } },
+      ]),
+    ]);
 
-        // Count total months paid across all payments
-        let totalMonthsPaid = 0;
-        for (const p of allPayments) {
-          totalMonthsPaid += (p.monthsCovered || []).length;
-        }
+    const monthsMap  = Object.fromEntries(monthsAgg.map(m => [m._id.toString(), m.totalMonths]));
+    const lastPayMap = Object.fromEntries(lastPayAgg.map(p => [p._id.toString(), { date: p.lastDate, amount: p.lastAmount }]));
 
-        // Due date = admissionDate + totalMonthsPaid months + 1 day
-        // e.g. admitted May 12, paid 1 month → paid through Jun 12 → due Jun 13
-        const admDate = student.admissionDate ? new Date(student.admissionDate) : now;
-        const paidThroughDate = new Date(admDate);
-        paidThroughDate.setMonth(paidThroughDate.getMonth() + totalMonthsPaid);
-        const dueDate = new Date(paidThroughDate);
-        dueDate.setDate(dueDate.getDate() + 1);
+    const enriched = students.map(student => {
+      const totalMonthsPaid = monthsMap[student._id.toString()] || 0;
+      const admDate = student.admissionDate ? new Date(student.admissionDate) : now;
+      const paidThroughDate = new Date(admDate);
+      paidThroughDate.setMonth(paidThroughDate.getMonth() + totalMonthsPaid);
+      const dueDate = new Date(paidThroughDate);
+      dueDate.setDate(dueDate.getDate() + 1);
+      const daysUntilDue = Math.ceil((dueDate - now) / 86400000);
+      const hasDues = dueDate <= now;
+      const dueSoon = !hasDues && daysUntilDue <= 7;
+      const last = lastPayMap[student._id.toString()];
 
-        const daysUntilDue = Math.ceil((dueDate - now) / 86400000);
-        const hasDues = dueDate <= now;
-        const dueSoon = !hasDues && daysUntilDue <= 7;
-
-        const lastPayment = allPayments.sort((a, b) => new Date(b.receivedDate) - new Date(a.receivedDate))[0];
-
-        return {
-          ...student,
-          totalMonthsPaid,
-          paidThroughDate,
-          dueDate,
-          daysUntilDue,
-          hasDues,
-          dueSoon,
-          lastPaymentDate: lastPayment?.receivedDate || null,
-          lastPaymentAmount: lastPayment?.amount || null,
-        };
-      })
-    );
+      return {
+        ...student,
+        totalMonthsPaid,
+        paidThroughDate,
+        dueDate,
+        daysUntilDue,
+        hasDues,
+        dueSoon,
+        lastPaymentDate: last?.date || null,
+        lastPaymentAmount: last?.amount || null,
+      };
+    });
 
     const filtered = req.query.all === 'true'
       ? enriched
@@ -169,6 +174,85 @@ exports.paymentComparison = async (req, res) => {
       previous: { ...previous, total: previousTotal, count: previousPayments.length },
       delta,
       deltaPercent,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.dashboardStats = async (req, res) => {
+  try {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+    const students = await User.find({ role: 'STUDENT', isActive: true }).select('-password').lean();
+    const ids = students.map(s => s._id);
+
+    const [monthsAgg, lastPayAgg, monthPayments, recentPayments] = await Promise.all([
+      Payment.aggregate([
+        { $match: { student: { $in: ids } } },
+        { $unwind: '$monthsCovered' },
+        { $group: { _id: '$student', totalMonths: { $sum: 1 } } },
+      ]),
+      Payment.aggregate([
+        { $match: { student: { $in: ids } } },
+        { $sort: { receivedDate: -1 } },
+        { $group: { _id: '$student', lastDate: { $first: '$receivedDate' }, lastAmount: { $first: '$amount' } } },
+      ]),
+      Payment.find({ receivedDate: { $gte: monthStart, $lte: monthEnd } }).lean(),
+      Payment.find().sort({ receivedDate: -1 }).limit(5)
+        .populate('student', 'fullName mobile photo whatsappNumber').lean(),
+    ]);
+
+    const monthsMap  = Object.fromEntries(monthsAgg.map(m => [m._id.toString(), m.totalMonths]));
+    const lastPayMap = Object.fromEntries(lastPayAgg.map(p => [p._id.toString(), { date: p.lastDate, amount: p.lastAmount }]));
+
+    let duesCount = 0;
+    const dueStudents = [];
+
+    for (const student of students) {
+      const totalMonthsPaid = monthsMap[student._id.toString()] || 0;
+      const admDate = student.admissionDate ? new Date(student.admissionDate) : now;
+      const paidThrough = new Date(admDate);
+      paidThrough.setMonth(paidThrough.getMonth() + totalMonthsPaid);
+      const dueDate = new Date(paidThrough);
+      dueDate.setDate(dueDate.getDate() + 1);
+      const daysUntilDue = Math.ceil((dueDate - now) / 86400000);
+      const hasDues = dueDate <= now;
+      const dueSoon = !hasDues && daysUntilDue <= 7;
+
+      if (hasDues || dueSoon) {
+        duesCount++;
+        if (dueStudents.length < 5) {
+          const last = lastPayMap[student._id.toString()];
+          dueStudents.push({
+            ...student,
+            totalMonthsPaid,
+            paidThroughDate: paidThrough,
+            dueDate,
+            daysUntilDue,
+            hasDues,
+            dueSoon,
+            lastPaymentDate: last?.date || null,
+            lastPaymentAmount: last?.amount || null,
+          });
+        }
+      }
+    }
+
+    dueStudents.sort((a, b) => a.daysUntilDue - b.daysUntilDue);
+
+    const monthTotal   = monthPayments.reduce((s, p) => s + p.amount, 0);
+    const monthCash    = monthPayments.filter(p => p.mode === 'cash').reduce((s, p) => s + p.amount, 0);
+    const monthOnline  = monthPayments.filter(p => p.mode === 'online').reduce((s, p) => s + p.amount, 0);
+
+    res.json({
+      totalStudents: students.length,
+      studentsWithDues: duesCount,
+      monthPayments: { total: monthTotal, cash: monthCash, online: monthOnline, count: monthPayments.length },
+      recentPayments,
+      dueStudents,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
