@@ -39,6 +39,23 @@ async function seed() {
     console.log('Password: manager123');
   }
 
+  const existingViewer = await User.findOne({ username: 'viewer@wisdomlibrary.in' });
+  if (existingViewer) {
+    console.log('Viewer already exists. Username: viewer@wisdomlibrary.in | Password: Viewer#12345678');
+  } else {
+    await User.create({
+      fullName: 'Library Viewer',
+      username: 'viewer@wisdomlibrary.in',
+      email: 'viewer@wisdomlibrary.in',
+      password: 'Viewer#12345678',
+      role: 'VIEWER',
+      libraryFees: 0,
+    });
+    console.log('✅ Viewer created!');
+    console.log('Username: viewer@wisdomlibrary.in');
+    console.log('Password: Viewer#12345678');
+  }
+
   await mongoose.disconnect();
 }
 
