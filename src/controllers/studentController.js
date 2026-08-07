@@ -399,19 +399,33 @@ exports.exportStudentsExcel = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
     const ids = students.map((s) => s._id);
-    const paymentCounts = await Payment.aggregate([
-      { $match: { student: { $in: ids } } },
-      { $unwind: "$monthsCovered" },
-      { $group: { _id: "$student", totalMonths: { $sum: 1 } } },
-    ]);
-    const countMap = Object.fromEntries(
-      paymentCounts.map((p) => [p._id.toString(), p.totalMonths]),
-    );
+
+    const payments = await Payment.find({ student: { $in: ids } })
+      .sort({ receivedDate: 1 })
+      .lean();
+
+    // Build per-student aggregates
+    const paymentsByStudent = {};
+    for (const p of payments) {
+      const key = p.student.toString();
+      if (!paymentsByStudent[key]) paymentsByStudent[key] = [];
+      paymentsByStudent[key].push(p);
+    }
+
+    const totalMonthsMap = {};
+    const totalAmountMap = {};
+    for (const [key, ps] of Object.entries(paymentsByStudent)) {
+      totalMonthsMap[key] = ps.reduce((sum, p) => sum + (p.monthsCovered?.length || 0), 0);
+      totalAmountMap[key] = ps.reduce((sum, p) => sum + (p.amount || 0), 0);
+    }
+
+    const studentMap = Object.fromEntries(students.map((s) => [s._id.toString(), s]));
 
     const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet("Students");
 
-    sheet.columns = [
+    // ── Sheet 1: Students ──
+    const sheet1 = workbook.addWorksheet("Students");
+    sheet1.columns = [
       { header: "Full Name", key: "fullName", width: 24 },
       { header: "Username", key: "username", width: 20 },
       { header: "Mobile", key: "mobile", width: 16 },
@@ -419,22 +433,23 @@ exports.exportStudentsExcel = async (req, res) => {
       { header: "Email", key: "email", width: 24 },
       { header: "Address", key: "address", width: 30 },
       { header: "Admission Date", key: "admissionDate", width: 16 },
-      { header: "Monthly Fees", key: "libraryFees", width: 14 },
+      { header: "Monthly Fees (₹)", key: "libraryFees", width: 16 },
       { header: "Seats (Batch: Seat)", key: "seats", width: 40 },
       { header: "Next Due Date", key: "nextDueDate", width: 16 },
       { header: "Active", key: "isActive", width: 10 },
+      { header: "Total Months Paid", key: "totalMonths", width: 18 },
+      { header: "Total Amount Paid (₹)", key: "totalAmount", width: 20 },
     ];
-    sheet.getRow(1).font = { bold: true };
+    sheet1.getRow(1).font = { bold: true };
 
     students.forEach((s) => {
-      const nextDueDate = computeNextDueDate(
-        s.admissionDate,
-        countMap[s._id.toString()] || 0,
-      );
+      const sid = s._id.toString();
+      const totalMonths = totalMonthsMap[sid] || 0;
+      const nextDueDate = computeNextDueDate(s.admissionDate, totalMonths);
       const seats = (s.seatAssignments || [])
         .map((a) => (a.seatNumber ? `${a.batch}: Seat ${a.seatNumber}` : a.batch))
         .join("; ");
-      sheet.addRow({
+      sheet1.addRow({
         fullName: s.fullName,
         username: s.username,
         mobile: s.mobile || "",
@@ -448,8 +463,48 @@ exports.exportStudentsExcel = async (req, res) => {
         seats: seats || "Not decided",
         nextDueDate: nextDueDate ? nextDueDate.toLocaleDateString("en-IN") : "",
         isActive: s.isActive ? "Active" : "Inactive",
+        totalMonths,
+        totalAmount: totalAmountMap[sid] || 0,
       });
     });
+
+    // ── Sheet 2: Payment History ──
+    const sheet2 = workbook.addWorksheet("Payment History");
+    sheet2.columns = [
+      { header: "Student Name", key: "studentName", width: 24 },
+      { header: "Mobile", key: "mobile", width: 16 },
+      { header: "Payment Date", key: "receivedDate", width: 16 },
+      { header: "Amount (₹)", key: "amount", width: 14 },
+      { header: "Mode", key: "mode", width: 12 },
+      { header: "Reference No", key: "referenceNo", width: 20 },
+      { header: "Months Covered", key: "monthsCovered", width: 40 },
+      { header: "Notes", key: "notes", width: 30 },
+    ];
+    sheet2.getRow(1).font = { bold: true };
+
+    const MONTH_NAMES = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+
+    for (const p of payments) {
+      const s = studentMap[p.student.toString()];
+      const monthsStr = (p.monthsCovered || [])
+        .map((m) => `${MONTH_NAMES[m.month - 1]} ${m.year}`)
+        .join(", ");
+      sheet2.addRow({
+        studentName: s?.fullName || "",
+        mobile: s?.mobile || "",
+        receivedDate: p.receivedDate
+          ? new Date(p.receivedDate).toLocaleDateString("en-IN")
+          : "",
+        amount: p.amount || 0,
+        mode: p.mode || "",
+        referenceNo: p.referenceNo || "",
+        monthsCovered: monthsStr,
+        notes: p.notes || "",
+      });
+    }
 
     res.setHeader(
       "Content-Type",
