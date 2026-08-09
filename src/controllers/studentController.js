@@ -379,6 +379,7 @@ exports.getSeatMap = async (req, res) => {
           fullName: 1,
           mobile: 1,
           username: 1,
+          admissionDate: 1,
           batch: "$seatAssignments.batch",
           seatNumber: "$seatAssignments.seatNumber",
         },
@@ -387,7 +388,25 @@ exports.getSeatMap = async (req, res) => {
     );
 
     const seats = await User.aggregate(pipeline);
-    res.json({ seats });
+
+    // Attach nextDueDate — fetch total months paid per student
+    const studentIds = [...new Set(seats.map((s) => s.studentId.toString()))];
+    const paymentCounts = await Payment.aggregate([
+      { $match: { student: { $in: studentIds.map((id) => require("mongoose").Types.ObjectId.createFromHexString(id)) } } },
+      { $unwind: "$monthsCovered" },
+      { $group: { _id: "$student", totalMonths: { $sum: 1 } } },
+    ]);
+    const countMap = Object.fromEntries(
+      paymentCounts.map((p) => [p._id.toString(), p.totalMonths]),
+    );
+
+    const seatsWithDue = seats.map((s) => {
+      const totalMonths = countMap[s.studentId.toString()] || 0;
+      const nextDueDate = computeNextDueDate(s.admissionDate, totalMonths);
+      return { ...s, nextDueDate };
+    });
+
+    res.json({ seats: seatsWithDue });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
