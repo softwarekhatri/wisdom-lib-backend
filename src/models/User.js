@@ -23,6 +23,8 @@ const userSchema = new mongoose.Schema(
       },
     ],
     isActive: { type: Boolean, default: true },
+    selfAdmission: { type: Boolean, default: false },
+    verifiedByAdmin: { type: Boolean, default: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

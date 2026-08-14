@@ -85,19 +85,36 @@ exports.listStudents = async (req, res) => {
     const search = (req.query.search || "").trim();
 
     const filter = { role: "STUDENT" };
-    if (search) {
-      filter.$or = [
-        { fullName: { $regex: search, $options: "i" } },
-        { mobile: { $regex: search, $options: "i" } },
-      ];
+    const conditions = [];
+
+    if (req.query.status === "pending") {
+      filter.selfAdmission = true;
+      filter.verifiedByAdmin = false;
+    } else {
+      // Exclude unverified self-admissions from regular views
+      conditions.push({
+        $or: [{ selfAdmission: { $ne: true } }, { verifiedByAdmin: true }],
+      });
+      if (req.query.active !== undefined)
+        filter.isActive = req.query.active === "true";
     }
-    if (req.query.active !== undefined)
-      filter.isActive = req.query.active === "true";
+
+    if (search) {
+      conditions.push({
+        $or: [
+          { fullName: { $regex: search, $options: "i" } },
+          { mobile: { $regex: search, $options: "i" } },
+        ],
+      });
+    }
+    if (conditions.length) filter.$and = conditions;
+
+    const sortOrder = req.query.status === "pending" ? { createdAt: 1 } : { createdAt: -1 };
 
     const [students, total] = await Promise.all([
       User.find(filter)
         .select("-password")
-        .sort({ createdAt: -1 })
+        .sort(sortOrder)
         .skip(skip)
         .limit(limit)
         .lean(),
@@ -535,6 +552,198 @@ exports.exportStudentsExcel = async (req, res) => {
     );
     await workbook.xlsx.write(res);
     res.end();
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── Public self-admission (no auth) ───────────────────────────────────────
+const BLOCKED_SEAT_NUMS = ["48", "51"];
+
+exports.getPublicSeats = async (req, res) => {
+  try {
+    const students = await User.find({
+      role: "STUDENT",
+      isActive: true,
+    })
+      .select("seatAssignments")
+      .lean();
+
+    const bookedMap = {};
+    for (const s of students) {
+      for (const a of s.seatAssignments || []) {
+        if (!a.seatNumber) continue;
+        if (!bookedMap[a.batch]) bookedMap[a.batch] = [];
+        bookedMap[a.batch].push(String(a.seatNumber));
+      }
+    }
+
+    res.json({ bookedSeats: bookedMap, blockedSeats: BLOCKED_SEAT_NUMS });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.selfAdmit = async (req, res) => {
+  try {
+    const { fullName, mobile, whatsappNumber, address } = req.body;
+
+    // Accept assignments as JSON string (multipart) or fallback to legacy batch/seatNumber
+    let assignments;
+    if (req.body.assignments) {
+      try {
+        assignments = parseSeatAssignments(req.body.assignments);
+      } catch (e) {
+        return res.status(400).json({ message: e.message });
+      }
+    } else if (req.body.batch) {
+      assignments = [{ batch: req.body.batch.trim(), seatNumber: (req.body.seatNumber || "").trim() }];
+    }
+
+    if (!fullName || !mobile || !assignments || assignments.length === 0) {
+      return res.status(400).json({ message: "Name, mobile and at least one batch are required" });
+    }
+
+    // Check for duplicate mobile number
+    const existing = await User.findOne({ mobile: mobile.trim(), role: "STUDENT" }).select("_id");
+    if (existing) {
+      return res.status(409).json({
+        message: "This mobile number is already registered. / यह मोबाइल नंबर पहले से रजिस्टर है।",
+      });
+    }
+
+    // Check blocked seats and conflicts for each assignment
+    for (const { batch, seatNumber } of assignments) {
+      if (seatNumber && BLOCKED_SEAT_NUMS.includes(String(seatNumber))) {
+        return res.status(400).json({ message: `Seat ${seatNumber} is not available` });
+      }
+      if (seatNumber) {
+        const conflict = await User.findOne({
+          role: "STUDENT",
+          isActive: true,
+          seatAssignments: { $elemMatch: { batch, seatNumber: String(seatNumber) } },
+        }).select("fullName");
+        if (conflict) {
+          return res.status(409).json({ message: `Seat ${seatNumber} is already taken for ${batch}` });
+        }
+      }
+    }
+
+    // Generate a unique username from mobile
+    const baseUsername = mobile.trim().replace(/\D/g, "");
+    let username = baseUsername;
+    let suffix = 1;
+    while (await User.findOne({ username })) {
+      username = `${baseUsername}_${suffix++}`;
+    }
+
+    let photo;
+    if (req.file) {
+      photo = await uploadPhoto(
+        req.file.buffer,
+        req.file.originalname,
+        buildPhotoName(fullName.trim(), assignments, mobile.trim()),
+      );
+    }
+
+    const student = await User.create({
+      fullName: fullName.trim(),
+      mobile: mobile.trim(),
+      whatsappNumber: (whatsappNumber || mobile).trim(),
+      address: address || "",
+      username,
+      password: `sa_${Date.now()}`,
+      role: "STUDENT",
+      isActive: false,
+      selfAdmission: true,
+      verifiedByAdmin: false,
+      photo,
+      seatAssignments: assignments,
+      libraryFees: [0, 300, 500, 750, 1000][Math.min(assignments.length, 4)],
+    });
+
+    res.status(201).json({ message: "Admission request submitted", studentId: student._id });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.bulkApproveAdmissions = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || !ids.length)
+      return res.status(400).json({ message: "No IDs provided" });
+
+    const results = { approved: [], failed: [] };
+    for (const id of ids) {
+      try {
+        const student = await User.findOne({ _id: id, role: "STUDENT", selfAdmission: true, verifiedByAdmin: false });
+        if (!student) { results.failed.push(id); continue; }
+        const conflict = await findSeatConflicts(student.seatAssignments, student._id);
+        if (conflict) { results.failed.push(id); continue; }
+        student.isActive = true;
+        student.verifiedByAdmin = true;
+        await student.save();
+        results.approved.push(id);
+      } catch { results.failed.push(id); }
+    }
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.bulkDenyAdmissions = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || !ids.length)
+      return res.status(400).json({ message: "No IDs provided" });
+
+    await User.deleteMany({ _id: { $in: ids }, role: "STUDENT", selfAdmission: true, verifiedByAdmin: false });
+    res.json({ message: "Denied and removed" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.approveAdmission = async (req, res) => {
+  try {
+    const student = await User.findOne({
+      _id: req.params.id,
+      role: "STUDENT",
+      selfAdmission: true,
+      verifiedByAdmin: false,
+    });
+    if (!student)
+      return res.status(404).json({ message: "Admission request not found" });
+
+    // Final seat conflict check before activating
+    const conflict = await findSeatConflicts(student.seatAssignments, student._id);
+    if (conflict) return res.status(409).json({ message: conflict });
+
+    student.isActive = true;
+    student.verifiedByAdmin = true;
+    await student.save();
+
+    res.json({ message: "Admission approved" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.denyAdmission = async (req, res) => {
+  try {
+    const student = await User.findOne({
+      _id: req.params.id,
+      role: "STUDENT",
+      selfAdmission: true,
+      verifiedByAdmin: false,
+    });
+    if (!student)
+      return res.status(404).json({ message: "Admission request not found" });
+
+    await User.findByIdAndDelete(req.params.id);
+    res.json({ message: "Admission request denied and removed" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
