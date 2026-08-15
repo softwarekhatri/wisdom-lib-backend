@@ -11,9 +11,21 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: 'Username and password required' });
     }
 
-    const user = await User.findOne({ username: username.toLowerCase().trim(), isActive: true });
+    const user = await User.findOne({ username: username.toLowerCase().trim() });
+
+    if (user && user.selfAdmission && !user.verifiedByAdmin) {
+      return res.status(403).json({
+        message: 'Your admission is not yet approved by admin. Please wait for verification. / आपका एडमिशन अभी एडमिन द्वारा अप्रूव नहीं हुआ है। कृपया प्रतीक्षा करें।',
+        pendingVerification: true,
+      });
+    }
+
     if (!user || user.password !== password) {
       return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    if (!user.isActive) {
+      return res.status(403).json({ message: 'Your account is inactive. Please contact the library.' });
     }
 
     const token = generateToken(user._id);

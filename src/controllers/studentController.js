@@ -652,7 +652,7 @@ exports.selfAdmit = async (req, res) => {
       whatsappNumber: (whatsappNumber || mobile).trim(),
       address: address || "",
       username,
-      password: `sa_${Date.now()}`,
+      password: '123456',
       role: "STUDENT",
       isActive: false,
       selfAdmission: true,
