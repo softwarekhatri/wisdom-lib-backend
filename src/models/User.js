@@ -20,6 +20,7 @@ const userSchema = new mongoose.Schema(
         _id: false,
         batch: { type: String, trim: true, required: true },
         seatNumber: { type: String, trim: true },
+        remarks: { type: String, trim: true, default: '' },
       },
     ],
     isActive: { type: Boolean, default: true },

@@ -75,7 +75,7 @@ exports.studentsWithDues = async (req, res) => {
       dueDate.setDate(dueDate.getDate() + 1);
       const daysUntilDue = Math.ceil((dueDate - now) / 86400000);
       const hasDues = dueDate <= now;
-      const dueSoon = !hasDues && daysUntilDue <= 7;
+      const dueSoon = !hasDues && daysUntilDue <= 5;
       const last = lastPayMap[student._id.toString()];
 
       return {
@@ -220,7 +220,7 @@ exports.dashboardStats = async (req, res) => {
       dueDate.setDate(dueDate.getDate() + 1);
       const daysUntilDue = Math.ceil((dueDate - now) / 86400000);
       const hasDues = dueDate <= now;
-      const dueSoon = !hasDues && daysUntilDue <= 7;
+      const dueSoon = !hasDues && daysUntilDue <= 5;
 
       if (hasDues || dueSoon) {
         duesCount++;

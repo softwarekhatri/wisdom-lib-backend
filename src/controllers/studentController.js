@@ -40,6 +40,7 @@ function parseSeatAssignments(raw) {
     .map((a) => ({
       batch: (a?.batch || "").trim(),
       seatNumber: (a?.seatNumber || "").trim(),
+      remarks: (a?.remarks || "").trim(),
     }))
     // Batch is mandatory; seat number is optional (student may not have a seat yet).
     .filter((a) => a.batch);
@@ -97,6 +98,10 @@ exports.listStudents = async (req, res) => {
       });
       if (req.query.active !== undefined)
         filter.isActive = req.query.active === "true";
+      if (req.query.flexi === "true") {
+        // Flexi: has at least one batch with no seat assigned
+        conditions.push({ seatAssignments: { $elemMatch: { batch: { $exists: true, $ne: "" }, seatNumber: "" } } });
+      }
     }
 
     if (search) {
