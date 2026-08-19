@@ -1,6 +1,7 @@
 const Payment = require('../models/Payment');
 const User = require('../models/User');
 const { computePaidThroughDate, computeNextDueDate } = require('../utils/paymentDates');
+const { BATCHES } = require('../utils/batches');
 
 exports.paymentReport = async (req, res) => {
   try {
@@ -249,6 +250,68 @@ exports.dashboardStats = async (req, res) => {
       monthPayments: { total: monthTotal, cash: monthCash, online: monthOnline, count: monthPayments.length },
       recentPayments,
       dueStudents,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Cross-tab of "how many students have N shifts" x "how many of those are in
+// batch X" — one query supports all three asks: total students per shift
+// count, total students per batch (any shift count), and the combined cell
+// (students with exactly N shifts who include batch X).
+exports.shiftDistribution = async (req, res) => {
+  try {
+    const activeOnly = req.query.active !== 'false';
+    const filter = { role: 'STUDENT' };
+    if (activeOnly) filter.isActive = true;
+
+    const students = await User.find(filter)
+      .select('fullName mobile photo isActive seatAssignments')
+      .lean();
+
+    const shiftCountTotals = {}; // { 1: n, 2: n, ... }
+    const batchTotals = {};      // { '2 PM - 6 PM': n, ... } — regardless of shift count
+    const matrix = {};           // { 1: { batch: n }, 2: { batch: n }, ... }
+    const studentList = [];      // for drill-down — one entry per student with a batch
+    let studentsWithBatch = 0;
+    let studentsWithoutBatch = 0;
+
+    for (const s of students) {
+      const batches = [...new Set((s.seatAssignments || []).map((a) => a.batch).filter(Boolean))];
+      const shiftCount = batches.length;
+      if (shiftCount === 0) {
+        studentsWithoutBatch++;
+        continue;
+      }
+      studentsWithBatch++;
+      shiftCountTotals[shiftCount] = (shiftCountTotals[shiftCount] || 0) + 1;
+      matrix[shiftCount] = matrix[shiftCount] || {};
+      for (const b of batches) {
+        matrix[shiftCount][b] = (matrix[shiftCount][b] || 0) + 1;
+        batchTotals[b] = (batchTotals[b] || 0) + 1;
+      }
+      studentList.push({
+        _id: s._id,
+        fullName: s.fullName,
+        mobile: s.mobile,
+        photo: s.photo,
+        isActive: s.isActive,
+        shiftCount,
+        batches,
+        seatAssignments: s.seatAssignments,
+      });
+    }
+
+    res.json({
+      totalStudents: students.length,
+      studentsWithBatch,
+      studentsWithoutBatch,
+      batches: BATCHES,
+      shiftCountTotals,
+      batchTotals,
+      matrix,
+      students: studentList,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
