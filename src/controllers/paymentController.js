@@ -1,9 +1,14 @@
+const { addMonths, addDays } = require('date-fns');
 const Payment = require('../models/Payment');
 const User = require('../models/User');
+const { computePaidThroughDate } = require('../utils/paymentDates');
 
 exports.addPayment = async (req, res) => {
   try {
-    const { studentId, amount, mode, referenceNo, receivedDate, startYear, startMonth, numMonths, notes } = req.body;
+    const {
+      studentId, amount, mode, referenceNo, receivedDate, notes,
+      startYear, startMonth, numMonths, noMonthCoverage, isCustomDate, coversUntil,
+    } = req.body;
 
     if (!studentId || !amount) {
       return res.status(400).json({ message: 'studentId and amount are required' });
@@ -15,14 +20,31 @@ exports.addPayment = async (req, res) => {
     }
 
     const monthsCovered = [];
-    if (startYear && startMonth && numMonths) {
-      let y = parseInt(startYear);
-      let m = parseInt(startMonth);
-      const n = parseInt(numMonths);
-      for (let i = 0; i < n; i++) {
-        monthsCovered.push({ year: y, month: m });
-        m++;
-        if (m > 12) { m = 1; y++; }
+    let periodStart, coversUntilDate;
+
+    if (!noMonthCoverage) {
+      const existingPayments = await Payment.find({ student: studentId });
+      const currentPaidThrough = computePaidThroughDate(student.admissionDate, existingPayments);
+      periodStart = addDays(currentPaidThrough, 1);
+
+      if (isCustomDate) {
+        if (!coversUntil) {
+          return res.status(400).json({ message: 'coversUntil is required for a custom coverage period' });
+        }
+        coversUntilDate = new Date(coversUntil);
+        if (coversUntilDate < periodStart) {
+          return res.status(400).json({ message: 'Covers-until date must be on or after the current paid-through date' });
+        }
+      } else if (startYear && startMonth && numMonths) {
+        let y = parseInt(startYear);
+        let m = parseInt(startMonth);
+        const n = parseInt(numMonths);
+        for (let i = 0; i < n; i++) {
+          monthsCovered.push({ year: y, month: m });
+          m++;
+          if (m > 12) { m = 1; y++; }
+        }
+        coversUntilDate = addMonths(currentPaidThrough, n);
       }
     }
 
@@ -33,6 +55,8 @@ exports.addPayment = async (req, res) => {
       referenceNo: referenceNo?.trim() || undefined,
       receivedDate: receivedDate ? new Date(receivedDate) : new Date(),
       monthsCovered,
+      periodStart,
+      coversUntil: coversUntilDate,
       notes: notes?.trim() || undefined,
       createdBy: req.user._id,
     });

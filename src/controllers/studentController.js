@@ -3,6 +3,7 @@ const User = require("../models/User");
 const Payment = require("../models/Payment");
 const { uploadPhoto } = require("../utils/uploadPhoto");
 const { BATCHES } = require("../utils/batches");
+const { computePaidThroughDate, computeNextDueDate: nextDueFromPaidThrough, coverageDurationDays } = require("../utils/paymentDates");
 
 function buildPhotoName(fullName, seatAssignments, mobile) {
   const shifts = (seatAssignments || [])
@@ -11,13 +12,9 @@ function buildPhotoName(fullName, seatAssignments, mobile) {
   return [fullName, shifts, mobile].filter(Boolean).join('_');
 }
 
-function computeNextDueDate(admissionDate, totalMonthsPaid) {
-  const base = admissionDate ? new Date(admissionDate) : new Date();
-  const paidThrough = new Date(base);
-  paidThrough.setMonth(paidThrough.getMonth() + totalMonthsPaid);
-  const nextDue = new Date(paidThrough);
-  nextDue.setDate(nextDue.getDate() + 1);
-  return nextDue;
+// payments: the student's Payment docs (or a subset with monthsCovered/coversUntil selected).
+function computeNextDueDate(admissionDate, payments) {
+  return nextDueFromPaidThrough(computePaidThroughDate(admissionDate, payments));
 }
 
 // Accepts the raw seatAssignments field from the request body — either a JSON
@@ -126,22 +123,22 @@ exports.listStudents = async (req, res) => {
       User.countDocuments(filter),
     ]);
 
-    // Single aggregate to get totalMonthsPaid per student (avoids N+1)
+    // Single query for all students' payments (avoids N+1)
     const ids = students.map((s) => s._id);
-    const paymentCounts = await Payment.aggregate([
-      { $match: { student: { $in: ids } } },
-      { $unwind: "$monthsCovered" },
-      { $group: { _id: "$student", totalMonths: { $sum: 1 } } },
-    ]);
-    const countMap = Object.fromEntries(
-      paymentCounts.map((p) => [p._id.toString(), p.totalMonths]),
-    );
+    const payments = await Payment.find({ student: { $in: ids } })
+      .select("student monthsCovered coversUntil")
+      .lean();
+    const paymentsByStudent = {};
+    for (const p of payments) {
+      const key = p.student.toString();
+      (paymentsByStudent[key] ||= []).push(p);
+    }
 
     const enriched = students.map((s) => ({
       ...s,
       nextDueDate: computeNextDueDate(
         s.admissionDate,
-        countMap[s._id.toString()] || 0,
+        paymentsByStudent[s._id.toString()] || [],
       ),
     }));
 
@@ -173,14 +170,7 @@ exports.getStudent = async (req, res) => {
       .sort({ receivedDate: -1 })
       .populate("createdBy", "fullName");
 
-    const totalMonthsPaid = payments.reduce(
-      (sum, p) => sum + (p.monthsCovered?.length || 0),
-      0,
-    );
-    const nextDueDate = computeNextDueDate(
-      student.admissionDate,
-      totalMonthsPaid,
-    );
+    const nextDueDate = computeNextDueDate(student.admissionDate, payments);
 
     res.json({ student: { ...student.toObject(), nextDueDate }, payments });
   } catch (err) {
@@ -411,20 +401,19 @@ exports.getSeatMap = async (req, res) => {
 
     const seats = await User.aggregate(pipeline);
 
-    // Attach nextDueDate — fetch total months paid per student
+    // Attach nextDueDate — fetch each student's payments
     const studentIds = [...new Set(seats.map((s) => s.studentId.toString()))];
-    const paymentCounts = await Payment.aggregate([
-      { $match: { student: { $in: studentIds.map((id) => require("mongoose").Types.ObjectId.createFromHexString(id)) } } },
-      { $unwind: "$monthsCovered" },
-      { $group: { _id: "$student", totalMonths: { $sum: 1 } } },
-    ]);
-    const countMap = Object.fromEntries(
-      paymentCounts.map((p) => [p._id.toString(), p.totalMonths]),
-    );
+    const payments = await Payment.find({
+      student: { $in: studentIds.map((id) => require("mongoose").Types.ObjectId.createFromHexString(id)) },
+    }).select("student monthsCovered coversUntil").lean();
+    const paymentsByStudent = {};
+    for (const p of payments) {
+      const key = p.student.toString();
+      (paymentsByStudent[key] ||= []).push(p);
+    }
 
     const seatsWithDue = seats.map((s) => {
-      const totalMonths = countMap[s.studentId.toString()] || 0;
-      const nextDueDate = computeNextDueDate(s.admissionDate, totalMonths);
+      const nextDueDate = computeNextDueDate(s.admissionDate, paymentsByStudent[s.studentId.toString()] || []);
       return { ...s, nextDueDate };
     });
 
@@ -486,7 +475,7 @@ exports.exportStudentsExcel = async (req, res) => {
     students.forEach((s) => {
       const sid = s._id.toString();
       const totalMonths = totalMonthsMap[sid] || 0;
-      const nextDueDate = computeNextDueDate(s.admissionDate, totalMonths);
+      const nextDueDate = computeNextDueDate(s.admissionDate, paymentsByStudent[sid] || []);
       const seats = (s.seatAssignments || [])
         .map((a) => (a.seatNumber ? `${a.batch}: Seat ${a.seatNumber}` : a.batch))
         .join("; ");
@@ -530,9 +519,13 @@ exports.exportStudentsExcel = async (req, res) => {
 
     for (const p of payments) {
       const s = studentMap[p.student.toString()];
-      const monthsStr = (p.monthsCovered || [])
+      let monthsStr = (p.monthsCovered || [])
         .map((m) => `${MONTH_NAMES[m.month - 1]} ${m.year}`)
         .join(", ");
+      if (!monthsStr && p.coversUntil && p.periodStart) {
+        const days = coverageDurationDays(p.periodStart, p.coversUntil);
+        monthsStr = `${days} day${days !== 1 ? "s" : ""}`;
+      }
       sheet2.addRow({
         studentName: s?.fullName || "",
         mobile: s?.mobile || "",

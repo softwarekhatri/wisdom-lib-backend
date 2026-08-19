@@ -13,6 +13,11 @@ const paymentSchema = new mongoose.Schema(
     referenceNo: { type: String, trim: true },
     receivedDate: { type: Date, required: true, default: Date.now },
     monthsCovered: [monthSchema],
+    // periodStart/coversUntil: the actual date range this payment covers.
+    // Populated for every coverage-bearing payment (whole-month or custom
+    // partial period); absent on legacy payments and "no coverage" payments.
+    periodStart: { type: Date },
+    coversUntil: { type: Date },
     notes: { type: String, trim: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

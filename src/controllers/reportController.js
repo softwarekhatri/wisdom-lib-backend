@@ -1,5 +1,6 @@
 const Payment = require('../models/Payment');
 const User = require('../models/User');
+const { computePaidThroughDate, computeNextDueDate } = require('../utils/paymentDates');
 
 exports.paymentReport = async (req, res) => {
   try {
@@ -49,13 +50,8 @@ exports.studentsWithDues = async (req, res) => {
     const students = await User.find({ role: 'STUDENT', isActive: true }).select('-password').lean();
     const ids = students.map(s => s._id);
 
-    // Two aggregates instead of N per-student queries
-    const [monthsAgg, lastPayAgg] = await Promise.all([
-      Payment.aggregate([
-        { $match: { student: { $in: ids } } },
-        { $unwind: '$monthsCovered' },
-        { $group: { _id: '$student', totalMonths: { $sum: 1 } } },
-      ]),
+    const [payments, lastPayAgg] = await Promise.all([
+      Payment.find({ student: { $in: ids } }).select('student monthsCovered coversUntil').lean(),
       Payment.aggregate([
         { $match: { student: { $in: ids } } },
         { $sort: { receivedDate: -1 } },
@@ -63,16 +59,18 @@ exports.studentsWithDues = async (req, res) => {
       ]),
     ]);
 
-    const monthsMap  = Object.fromEntries(monthsAgg.map(m => [m._id.toString(), m.totalMonths]));
+    const paymentsByStudent = {};
+    for (const p of payments) {
+      const key = p.student.toString();
+      (paymentsByStudent[key] ||= []).push(p);
+    }
     const lastPayMap = Object.fromEntries(lastPayAgg.map(p => [p._id.toString(), { date: p.lastDate, amount: p.lastAmount }]));
 
     const enriched = students.map(student => {
-      const totalMonthsPaid = monthsMap[student._id.toString()] || 0;
-      const admDate = student.admissionDate ? new Date(student.admissionDate) : now;
-      const paidThroughDate = new Date(admDate);
-      paidThroughDate.setMonth(paidThroughDate.getMonth() + totalMonthsPaid);
-      const dueDate = new Date(paidThroughDate);
-      dueDate.setDate(dueDate.getDate() + 1);
+      const studentPayments = paymentsByStudent[student._id.toString()] || [];
+      const totalMonthsPaid = studentPayments.reduce((sum, p) => sum + (p.monthsCovered?.length || 0), 0);
+      const paidThroughDate = computePaidThroughDate(student.admissionDate, studentPayments);
+      const dueDate = computeNextDueDate(paidThroughDate);
       const daysUntilDue = Math.ceil((dueDate - now) / 86400000);
       const hasDues = dueDate <= now;
       const dueSoon = !hasDues && daysUntilDue <= 5;
@@ -189,12 +187,8 @@ exports.dashboardStats = async (req, res) => {
     const students = await User.find({ role: 'STUDENT', isActive: true }).select('-password').lean();
     const ids = students.map(s => s._id);
 
-    const [monthsAgg, lastPayAgg, monthPayments, recentPayments] = await Promise.all([
-      Payment.aggregate([
-        { $match: { student: { $in: ids } } },
-        { $unwind: '$monthsCovered' },
-        { $group: { _id: '$student', totalMonths: { $sum: 1 } } },
-      ]),
+    const [payments, lastPayAgg, monthPayments, recentPayments] = await Promise.all([
+      Payment.find({ student: { $in: ids } }).select('student monthsCovered coversUntil').lean(),
       Payment.aggregate([
         { $match: { student: { $in: ids } } },
         { $sort: { receivedDate: -1 } },
@@ -205,19 +199,21 @@ exports.dashboardStats = async (req, res) => {
         .populate('student', 'fullName mobile photo whatsappNumber').lean(),
     ]);
 
-    const monthsMap  = Object.fromEntries(monthsAgg.map(m => [m._id.toString(), m.totalMonths]));
+    const paymentsByStudent = {};
+    for (const p of payments) {
+      const key = p.student.toString();
+      (paymentsByStudent[key] ||= []).push(p);
+    }
     const lastPayMap = Object.fromEntries(lastPayAgg.map(p => [p._id.toString(), { date: p.lastDate, amount: p.lastAmount }]));
 
     let duesCount = 0;
     const dueStudents = [];
 
     for (const student of students) {
-      const totalMonthsPaid = monthsMap[student._id.toString()] || 0;
-      const admDate = student.admissionDate ? new Date(student.admissionDate) : now;
-      const paidThrough = new Date(admDate);
-      paidThrough.setMonth(paidThrough.getMonth() + totalMonthsPaid);
-      const dueDate = new Date(paidThrough);
-      dueDate.setDate(dueDate.getDate() + 1);
+      const studentPayments = paymentsByStudent[student._id.toString()] || [];
+      const totalMonthsPaid = studentPayments.reduce((sum, p) => sum + (p.monthsCovered?.length || 0), 0);
+      const paidThrough = computePaidThroughDate(student.admissionDate, studentPayments);
+      const dueDate = computeNextDueDate(paidThrough);
       const daysUntilDue = Math.ceil((dueDate - now) / 86400000);
       const hasDues = dueDate <= now;
       const dueSoon = !hasDues && daysUntilDue <= 5;
