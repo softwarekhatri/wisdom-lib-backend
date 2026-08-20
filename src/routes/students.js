@@ -15,6 +15,7 @@ const {
   denyAdmission,
   bulkApproveAdmissions,
   bulkDenyAdmissions,
+  sendReminder,
 } = require('../controllers/studentController');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -27,6 +28,7 @@ router.get('/export/excel', auth, requireRole('VIEWER', 'MANAGER', 'ADMIN', 'SUP
 router.get('/:id', auth, getStudent);
 router.put('/:id', auth, requireRole('ADMIN', 'SUPER_ADMIN'), upload.single('photo'), updateStudent);
 router.patch('/:id/password', auth, requireRole('ADMIN', 'SUPER_ADMIN'), resetPassword);
+router.patch('/:id/remind', auth, requireRole('MANAGER', 'ADMIN', 'SUPER_ADMIN'), sendReminder);
 router.delete('/:id', auth, requireRole('ADMIN', 'SUPER_ADMIN'), deleteStudent);
 router.patch('/:id/approve-admission', auth, requireRole('MANAGER', 'ADMIN', 'SUPER_ADMIN'), approveAdmission);
 router.delete('/:id/deny-admission', auth, requireRole('MANAGER', 'ADMIN', 'SUPER_ADMIN'), denyAdmission);
