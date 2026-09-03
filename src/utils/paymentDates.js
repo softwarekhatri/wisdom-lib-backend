@@ -16,10 +16,15 @@ function computePaidThroughDate(admissionDate, payments) {
 
   const withCoversUntil = (payments || []).filter((p) => p.coversUntil);
   if (withCoversUntil.length) {
-    return withCoversUntil.reduce(
+    const latest = withCoversUntil.reduce(
       (latest, p) => (new Date(p.coversUntil) > latest ? new Date(p.coversUntil) : latest),
       new Date(withCoversUntil[0].coversUntil),
     );
+    // Guards against readmission: a rejoined student's admissionDate moves
+    // forward to the readmission date, but old payments from the previous
+    // stint keep their (now stale) coversUntil dates. Coverage can never
+    // predate the current stint's start.
+    return latest > base ? latest : base;
   }
 
   const totalMonths = (payments || []).reduce((sum, p) => sum + (p.monthsCovered?.length || 0), 0);

@@ -111,7 +111,10 @@ exports.listStudents = async (req, res) => {
     }
     if (conditions.length) filter.$and = conditions;
 
-    const sortOrder = req.query.status === "pending" ? { createdAt: 1 } : { createdAt: -1 };
+    let sortOrder;
+    if (req.query.status === "pending") sortOrder = { createdAt: 1 };
+    else if (filter.isActive === false) sortOrder = { inactiveDate: -1, createdAt: -1 };
+    else sortOrder = { createdAt: -1 };
 
     const [students, total] = await Promise.all([
       User.find(filter)
@@ -343,6 +346,70 @@ exports.resetPassword = async (req, res) => {
 
     await User.findByIdAndUpdate(req.params.id, { password });
     res.json({ message: "Password updated successfully" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Marks an active student inactive (e.g. they've stopped attending), recording
+// the date so a later readmission can show the full "joined → left → rejoined"
+// history instead of just overwriting the status.
+exports.deactivateStudent = async (req, res) => {
+  try {
+    const student = await User.findById(req.params.id);
+    if (!student || student.role !== "STUDENT") {
+      return res.status(404).json({ message: "Student not found" });
+    }
+    if (!student.isActive) {
+      return res.status(400).json({ message: "Student is already inactive" });
+    }
+
+    const inactiveDate = req.body.inactiveDate ? new Date(req.body.inactiveDate) : new Date();
+    if (inactiveDate < new Date(student.admissionDate)) {
+      return res.status(400).json({ message: "Inactive date cannot be before the admission date" });
+    }
+
+    student.isActive = false;
+    student.inactiveDate = inactiveDate;
+    await student.save();
+
+    res.json({ student });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Re-admits a previously inactive student. The prior stint (original
+// admissionDate → inactiveDate) is archived into admissionHistory, and
+// admissionDate is moved forward to the readmission date so fee due-date
+// calculations start fresh from the day they rejoined — same student record,
+// same payment history, no need to re-admit as a brand-new profile.
+exports.readmitStudent = async (req, res) => {
+  try {
+    const student = await User.findById(req.params.id);
+    if (!student || student.role !== "STUDENT") {
+      return res.status(404).json({ message: "Student not found" });
+    }
+    if (student.isActive) {
+      return res.status(400).json({ message: "Student is already active" });
+    }
+
+    const readmissionDate = req.body.readmissionDate ? new Date(req.body.readmissionDate) : new Date();
+    const closedInactiveDate = student.inactiveDate || new Date();
+    if (readmissionDate < closedInactiveDate) {
+      return res.status(400).json({ message: "Readmission date cannot be before the inactive date" });
+    }
+
+    student.admissionHistory.push({
+      admissionDate: student.admissionDate,
+      inactiveDate: closedInactiveDate,
+    });
+    student.admissionDate = readmissionDate;
+    student.inactiveDate = undefined;
+    student.isActive = true;
+    await student.save();
+
+    res.json({ student });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

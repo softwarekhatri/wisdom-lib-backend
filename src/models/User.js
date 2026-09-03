@@ -24,6 +24,20 @@ const userSchema = new mongoose.Schema(
       },
     ],
     isActive: { type: Boolean, default: true },
+    // Date the student was most recently marked inactive. Cleared on readmission
+    // (once the stint is archived into admissionHistory below).
+    inactiveDate: { type: Date },
+    // One entry per completed membership stint — preserves the original join
+    // date and every inactive/readmission cycle even though `admissionDate`
+    // itself is overwritten with the readmission date so due-date math
+    // (computePaidThroughDate) always resets cleanly on rejoin.
+    admissionHistory: [
+      {
+        _id: false,
+        admissionDate: { type: Date, required: true },
+        inactiveDate: { type: Date, required: true },
+      },
+    ],
     lastReminderSentAt: { type: Date },
     selfAdmission: { type: Boolean, default: false },
     verifiedByAdmin: { type: Boolean, default: true },
