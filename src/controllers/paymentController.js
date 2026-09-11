@@ -18,6 +18,9 @@ exports.addPayment = async (req, res) => {
     if (!student || student.role !== 'STUDENT') {
       return res.status(404).json({ message: 'Student not found' });
     }
+    if (!student.isActive) {
+      return res.status(400).json({ message: 'Cannot record a payment for an inactive student — readmit them first' });
+    }
 
     const monthsCovered = [];
     let periodStart, coversUntilDate;
