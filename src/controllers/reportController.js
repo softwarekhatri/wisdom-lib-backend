@@ -1,3 +1,4 @@
+const { differenceInCalendarDays } = require('date-fns');
 const Payment = require('../models/Payment');
 const User = require('../models/User');
 const { computePaidThroughDate, computeNextDueDate } = require('../utils/paymentDates');
@@ -72,8 +73,11 @@ exports.studentsWithDues = async (req, res) => {
       const totalMonthsPaid = studentPayments.reduce((sum, p) => sum + (p.monthsCovered?.length || 0), 0);
       const paidThroughDate = computePaidThroughDate(student.admissionDate, studentPayments);
       const dueDate = computeNextDueDate(paidThroughDate);
-      const daysUntilDue = Math.ceil((dueDate - now) / 86400000);
-      const hasDues = dueDate <= now;
+      // Calendar-day difference, not raw ms: dueDate is now the coverage-end
+      // day itself (a renewal date), so the whole of that day counts as
+      // "due today", not "overdue" — overdue only once the day is over.
+      const daysUntilDue = differenceInCalendarDays(dueDate, now);
+      const hasDues = daysUntilDue < 0;
       const dueSoon = !hasDues && daysUntilDue <= 5;
       const last = lastPayMap[student._id.toString()];
 
@@ -215,8 +219,8 @@ exports.dashboardStats = async (req, res) => {
       const totalMonthsPaid = studentPayments.reduce((sum, p) => sum + (p.monthsCovered?.length || 0), 0);
       const paidThrough = computePaidThroughDate(student.admissionDate, studentPayments);
       const dueDate = computeNextDueDate(paidThrough);
-      const daysUntilDue = Math.ceil((dueDate - now) / 86400000);
-      const hasDues = dueDate <= now;
+      const daysUntilDue = differenceInCalendarDays(dueDate, now);
+      const hasDues = daysUntilDue < 0;
       const dueSoon = !hasDues && daysUntilDue <= 5;
 
       if (hasDues || dueSoon) {

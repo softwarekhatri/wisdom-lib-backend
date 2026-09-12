@@ -1,4 +1,4 @@
-const { addMonths, addDays, differenceInCalendarDays } = require('date-fns');
+const { addMonths, differenceInCalendarDays } = require('date-fns');
 
 // Single source of truth for "how far is this student paid up to".
 //
@@ -37,8 +37,10 @@ function computePaidThroughDate(admissionDate, payments) {
   return addMonths(base, totalMonths);
 }
 
+// Due date = the paid-through date itself — the day coverage runs out is the
+// day the next payment is due (a monthly renewal date, not a grace day after).
 function computeNextDueDate(paidThroughDate) {
-  return addDays(paidThroughDate, 1);
+  return paidThroughDate;
 }
 
 // Inclusive day count of a coverage period.
