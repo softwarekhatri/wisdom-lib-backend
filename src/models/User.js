@@ -38,6 +38,20 @@ const userSchema = new mongoose.Schema(
         inactiveDate: { type: Date, required: true },
       },
     ],
+    // The single stored due date — every screen (student card, profile,
+    // dues report, seat map, student login) reads this field directly
+    // instead of recomputing it, so they can never disagree with each
+    // other. Maintained by services/dueDateService.recalculateNextDueDate,
+    // called after every mutation that could change it (payment
+    // create/delete, admissionDate edit, readmission).
+    nextDueDate: { type: Date },
+    // True once an admin has manually set nextDueDate (e.g. a student paid,
+    // left immediately, and resumes later on the same payment — the admin
+    // sets the resume date directly rather than fighting the payment-based
+    // formula). While true, recalculateNextDueDate leaves nextDueDate alone;
+    // recording a NEW payment always clears it, since a new payment is
+    // unambiguous new truth.
+    nextDueDateOverride: { type: Boolean, default: false },
     lastReminderSentAt: { type: Date },
     selfAdmission: { type: Boolean, default: false },
     verifiedByAdmin: { type: Boolean, default: true },

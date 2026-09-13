@@ -3,18 +3,14 @@ const User = require("../models/User");
 const Payment = require("../models/Payment");
 const { uploadPhoto } = require("../utils/uploadPhoto");
 const { BATCHES } = require("../utils/batches");
-const { computePaidThroughDate, computeNextDueDate: nextDueFromPaidThrough, coverageDurationDays } = require("../utils/paymentDates");
+const { coverageDurationDays } = require("../utils/paymentDates");
+const { recalculateNextDueDate } = require("../services/dueDateService");
 
 function buildPhotoName(fullName, seatAssignments, mobile) {
   const shifts = (seatAssignments || [])
     .map(a => a.batch.replace(/\s+/g, '').replace(/-/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, ''))
     .join('_');
   return [fullName, shifts, mobile].filter(Boolean).join('_');
-}
-
-// payments: the student's Payment docs (or a subset with monthsCovered/coversUntil selected).
-function computeNextDueDate(admissionDate, payments) {
-  return nextDueFromPaidThrough(computePaidThroughDate(admissionDate, payments));
 }
 
 // Accepts the raw seatAssignments field from the request body — either a JSON
@@ -126,27 +122,11 @@ exports.listStudents = async (req, res) => {
       User.countDocuments(filter),
     ]);
 
-    // Single query for all students' payments (avoids N+1)
-    const ids = students.map((s) => s._id);
-    const payments = await Payment.find({ student: { $in: ids } })
-      .select("student monthsCovered coversUntil")
-      .lean();
-    const paymentsByStudent = {};
-    for (const p of payments) {
-      const key = p.student.toString();
-      (paymentsByStudent[key] ||= []).push(p);
-    }
-
-    const enriched = students.map((s) => ({
-      ...s,
-      nextDueDate: computeNextDueDate(
-        s.admissionDate,
-        paymentsByStudent[s._id.toString()] || [],
-      ),
-    }));
-
+    // nextDueDate is a stored field on User (see services/dueDateService),
+    // maintained on every payment/admission mutation — no need to recompute
+    // it here from Payment docs.
     res.json({
-      students: enriched,
+      students,
       pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     });
   } catch (err) {
@@ -173,9 +153,9 @@ exports.getStudent = async (req, res) => {
       .sort({ receivedDate: -1 })
       .populate("createdBy", "fullName");
 
-    const nextDueDate = computeNextDueDate(student.admissionDate, payments);
-
-    res.json({ student: { ...student.toObject(), nextDueDate }, payments });
+    // nextDueDate is read straight from the stored field — same value the
+    // student card, dues report, and seat map all read.
+    res.json({ student: student.toObject(), payments });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -228,6 +208,8 @@ exports.createStudent = async (req, res) => {
       ? await uploadPhoto(req.file.buffer, req.file.originalname, buildPhotoName(fullName?.trim(), assignments, mobile?.trim()))
       : undefined;
 
+    const resolvedAdmissionDate = admissionDate ? new Date(admissionDate) : new Date();
+
     const student = await User.create({
       fullName: fullName.trim(),
       username,
@@ -237,7 +219,9 @@ exports.createStudent = async (req, res) => {
       mobile: mobile?.trim() || undefined,
       whatsappNumber: whatsappNumber?.trim() || undefined,
       address: address?.trim() || undefined,
-      admissionDate: admissionDate ? new Date(admissionDate) : new Date(),
+      admissionDate: resolvedAdmissionDate,
+      // No payments exist yet, so the due date is the admission date itself.
+      nextDueDate: resolvedAdmissionDate,
       libraryFees: parseFloat(libraryFees) || 0,
       seatAssignments: assignments,
       photo: photoUrl,
@@ -317,6 +301,12 @@ exports.updateStudent = async (req, res) => {
       new: true,
       select: "-password",
     });
+
+    // admissionDate is an input to the due-date formula — recompute
+    // (respecting a manual override, if one is set) so it doesn't go stale.
+    if (admissionDate !== undefined) {
+      student.nextDueDate = await recalculateNextDueDate(student._id);
+    }
 
     res.json({ student });
   } catch (err) {
@@ -409,7 +399,46 @@ exports.readmitStudent = async (req, res) => {
     student.isActive = true;
     await student.save();
 
+    // Fresh stint: discard any stale manual override and recompute from
+    // scratch (with no post-readmission payments yet, this resets to the
+    // readmission date itself — "due immediately").
+    student.nextDueDate = await recalculateNextDueDate(student._id, { clearOverride: true });
+
     res.json({ student });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Lets an admin set nextDueDate directly — e.g. a student paid, left
+// immediately, and resumes later on the same payment: readmit them, then set
+// the due date to whenever they actually agreed to resume paying, instead of
+// it being derived from that old payment's coverage. Sets
+// nextDueDateOverride so the payment-based formula won't silently overwrite
+// it — until a new payment is recorded, which always clears the override.
+// Pass clearOverride to revert to the auto-calculated date instead.
+exports.updateNextDueDate = async (req, res) => {
+  try {
+    const student = await User.findById(req.params.id);
+    if (!student || student.role !== "STUDENT") {
+      return res.status(404).json({ message: "Student not found" });
+    }
+
+    if (req.body.clearOverride) {
+      const nextDueDate = await recalculateNextDueDate(student._id, { clearOverride: true });
+      return res.json({ nextDueDate, nextDueDateOverride: false });
+    }
+
+    const { nextDueDate } = req.body;
+    if (!nextDueDate) {
+      return res.status(400).json({ message: "nextDueDate is required" });
+    }
+
+    student.nextDueDate = new Date(nextDueDate);
+    student.nextDueDateOverride = true;
+    await student.save();
+
+    res.json({ nextDueDate: student.nextDueDate, nextDueDateOverride: true });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -473,6 +502,7 @@ exports.getSeatMap = async (req, res) => {
           mobile: 1,
           username: 1,
           admissionDate: 1,
+          nextDueDate: 1,
           batch: "$seatAssignments.batch",
           seatNumber: "$seatAssignments.seatNumber",
         },
@@ -482,23 +512,7 @@ exports.getSeatMap = async (req, res) => {
 
     const seats = await User.aggregate(pipeline);
 
-    // Attach nextDueDate — fetch each student's payments
-    const studentIds = [...new Set(seats.map((s) => s.studentId.toString()))];
-    const payments = await Payment.find({
-      student: { $in: studentIds.map((id) => require("mongoose").Types.ObjectId.createFromHexString(id)) },
-    }).select("student monthsCovered coversUntil").lean();
-    const paymentsByStudent = {};
-    for (const p of payments) {
-      const key = p.student.toString();
-      (paymentsByStudent[key] ||= []).push(p);
-    }
-
-    const seatsWithDue = seats.map((s) => {
-      const nextDueDate = computeNextDueDate(s.admissionDate, paymentsByStudent[s.studentId.toString()] || []);
-      return { ...s, nextDueDate };
-    });
-
-    res.json({ seats: seatsWithDue });
+    res.json({ seats });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -556,7 +570,7 @@ exports.exportStudentsExcel = async (req, res) => {
     students.forEach((s) => {
       const sid = s._id.toString();
       const totalMonths = totalMonthsMap[sid] || 0;
-      const nextDueDate = computeNextDueDate(s.admissionDate, paymentsByStudent[sid] || []);
+      const nextDueDate = s.nextDueDate;
       const seats = (s.seatAssignments || [])
         .map((a) => (a.seatNumber ? `${a.batch}: Seat ${a.seatNumber}` : a.batch))
         .join("; ");
@@ -725,6 +739,8 @@ exports.selfAdmit = async (req, res) => {
       );
     }
 
+    const selfAdmissionDate = new Date();
+
     const student = await User.create({
       fullName: fullName.trim(),
       mobile: mobile.trim(),
@@ -734,6 +750,9 @@ exports.selfAdmit = async (req, res) => {
       password: '123456',
       role: "STUDENT",
       isActive: false,
+      admissionDate: selfAdmissionDate,
+      // No payments exist yet, so the due date is the admission date itself.
+      nextDueDate: selfAdmissionDate,
       selfAdmission: true,
       verifiedByAdmin: false,
       photo,

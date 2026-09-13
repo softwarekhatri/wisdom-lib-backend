@@ -2,6 +2,7 @@ const { addMonths, addDays } = require('date-fns');
 const Payment = require('../models/Payment');
 const User = require('../models/User');
 const { computePaidThroughDate } = require('../utils/paymentDates');
+const { recalculateNextDueDate } = require('../services/dueDateService');
 
 exports.addPayment = async (req, res) => {
   try {
@@ -65,6 +66,8 @@ exports.addPayment = async (req, res) => {
     });
 
     await payment.populate('createdBy', 'fullName');
+    // A new payment is unambiguous new truth — clears any manual override.
+    await recalculateNextDueDate(studentId, { clearOverride: true });
 
     res.status(201).json({ payment });
   } catch (err) {
@@ -102,6 +105,7 @@ exports.deletePayment = async (req, res) => {
   try {
     const payment = await Payment.findByIdAndDelete(req.params.id);
     if (!payment) return res.status(404).json({ message: 'Payment not found' });
+    await recalculateNextDueDate(payment.student);
     res.json({ message: 'Payment deleted' });
   } catch (err) {
     res.status(500).json({ message: err.message });

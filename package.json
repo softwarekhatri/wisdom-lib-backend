@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "migrate:next-due-date": "node scripts/migrateNextDueDate.js",
+    "migrate:next-due-date:apply": "node scripts/migrateNextDueDate.js --apply"
   },
   "dependencies": {
     "cloudinary": "^2.10.0",

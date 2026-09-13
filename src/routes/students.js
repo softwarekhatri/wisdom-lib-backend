@@ -18,6 +18,7 @@ const {
   sendReminder,
   deactivateStudent,
   readmitStudent,
+  updateNextDueDate,
 } = require('../controllers/studentController');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -31,6 +32,7 @@ router.get('/:id', auth, getStudent);
 router.put('/:id', auth, requireRole('ADMIN', 'SUPER_ADMIN'), upload.single('photo'), updateStudent);
 router.patch('/:id/password', auth, requireRole('ADMIN', 'SUPER_ADMIN'), resetPassword);
 router.patch('/:id/remind', auth, requireRole('MANAGER', 'ADMIN', 'SUPER_ADMIN'), sendReminder);
+router.patch('/:id/next-due-date', auth, requireRole('ADMIN', 'SUPER_ADMIN'), updateNextDueDate);
 router.patch('/:id/deactivate', auth, requireRole('ADMIN', 'SUPER_ADMIN'), deactivateStudent);
 router.patch('/:id/readmit', auth, requireRole('ADMIN', 'SUPER_ADMIN'), readmitStudent);
 router.delete('/:id', auth, requireRole('ADMIN', 'SUPER_ADMIN'), deleteStudent);

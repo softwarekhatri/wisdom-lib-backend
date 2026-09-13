@@ -1,7 +1,6 @@
 const { differenceInCalendarDays } = require('date-fns');
 const Payment = require('../models/Payment');
 const User = require('../models/User');
-const { computePaidThroughDate, computeNextDueDate } = require('../utils/paymentDates');
 const { BATCHES } = require('../utils/batches');
 
 exports.paymentReport = async (req, res) => {
@@ -53,7 +52,7 @@ exports.studentsWithDues = async (req, res) => {
     const ids = students.map(s => s._id);
 
     const [payments, lastPayAgg] = await Promise.all([
-      Payment.find({ student: { $in: ids } }).select('student monthsCovered coversUntil').lean(),
+      Payment.find({ student: { $in: ids } }).select('student monthsCovered').lean(),
       Payment.aggregate([
         { $match: { student: { $in: ids } } },
         { $sort: { receivedDate: -1 } },
@@ -71,9 +70,10 @@ exports.studentsWithDues = async (req, res) => {
     const enriched = students.map(student => {
       const studentPayments = paymentsByStudent[student._id.toString()] || [];
       const totalMonthsPaid = studentPayments.reduce((sum, p) => sum + (p.monthsCovered?.length || 0), 0);
-      const paidThroughDate = computePaidThroughDate(student.admissionDate, studentPayments);
-      const dueDate = computeNextDueDate(paidThroughDate);
-      // Calendar-day difference, not raw ms: dueDate is now the coverage-end
+      // dueDate reads the stored field — same value the student card,
+      // profile, and seat map all read. See services/dueDateService.
+      const dueDate = student.nextDueDate;
+      // Calendar-day difference, not raw ms: dueDate is the coverage-end
       // day itself (a renewal date), so the whole of that day counts as
       // "due today", not "overdue" — overdue only once the day is over.
       const daysUntilDue = differenceInCalendarDays(dueDate, now);
@@ -84,7 +84,7 @@ exports.studentsWithDues = async (req, res) => {
       return {
         ...student,
         totalMonthsPaid,
-        paidThroughDate,
+        paidThroughDate: dueDate,
         dueDate,
         daysUntilDue,
         hasDues,
@@ -193,7 +193,7 @@ exports.dashboardStats = async (req, res) => {
     const ids = students.map(s => s._id);
 
     const [payments, lastPayAgg, monthPayments, recentPayments] = await Promise.all([
-      Payment.find({ student: { $in: ids } }).select('student monthsCovered coversUntil').lean(),
+      Payment.find({ student: { $in: ids } }).select('student monthsCovered').lean(),
       Payment.aggregate([
         { $match: { student: { $in: ids } } },
         { $sort: { receivedDate: -1 } },
@@ -217,8 +217,7 @@ exports.dashboardStats = async (req, res) => {
     for (const student of students) {
       const studentPayments = paymentsByStudent[student._id.toString()] || [];
       const totalMonthsPaid = studentPayments.reduce((sum, p) => sum + (p.monthsCovered?.length || 0), 0);
-      const paidThrough = computePaidThroughDate(student.admissionDate, studentPayments);
-      const dueDate = computeNextDueDate(paidThrough);
+      const dueDate = student.nextDueDate;
       const daysUntilDue = differenceInCalendarDays(dueDate, now);
       const hasDues = daysUntilDue < 0;
       const dueSoon = !hasDues && daysUntilDue <= 5;
@@ -230,7 +229,7 @@ exports.dashboardStats = async (req, res) => {
           dueStudents.push({
             ...student,
             totalMonthsPaid,
-            paidThroughDate: paidThrough,
+            paidThroughDate: dueDate,
             dueDate,
             daysUntilDue,
             hasDues,
